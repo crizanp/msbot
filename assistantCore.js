@@ -528,6 +528,7 @@ function isTokenScannerEligibilityFailQuery(query) {
   if (!/\beligibility\b/.test(q)) return false;
 
   return /\b(fail|failed|failing|blocked|blocking)\b/.test(q);
+}
 
 
 function buildContextualizedQuery(query, context) {
