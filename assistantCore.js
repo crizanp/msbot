@@ -10,7 +10,6 @@ export const WELCOME = `
 Hi 👋 I can help with MoonSale presales, fair launches, fees, vesting, token locks, KYC, and audits\\.
 
 You will get clear answers based on official MoonSale information\\.
-
 *Try asking:*
 • 🤔 What is MoonSale\\?
 • ➕ How do I create a presale\\?
