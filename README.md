@@ -195,13 +195,20 @@ Expected result:
 ## 4A. Admin Ignore + Per-User AI Pause
 
 Behavior implemented:
-- If sender ID matches admin/community env IDs, bot does not reply at all.
+- In private chats, sender IDs in admin/community env IDs are ignored.
+- In groups/supergroups, admin activity starts a quiet window for that chat.
+- During the admin quiet window (default 30 minutes), the bot skips non-mentioned queries from everyone.
+- If a message explicitly mentions `@MoonsaleAssistantBot`, the bot can reply during the quiet window (for non-admins and admins).
+- Group admins can get replies only when they explicitly mention the bot.
 - From the 2nd AI reply onward (same Telegram user ID), bot appends:
    - `/stopAiBot` to pause replies
    - `/startAiBot` to resume replies
 - `/stopAiBot` pauses AI replies for that user for 12h (or `AI_BOT_STOP_HOURS`).
 - `/startAiBot` resumes replies immediately.
 - If a sender posts image/media, bot sends a text-only notice and asks users to wait for admin assistance.
+
+Optional env settings:
+- `GROUP_ADMIN_ACTIVITY_WINDOW_MS=1800000` (30 minutes default)
 
 If using Supabase persistence, create this table once:
 

@@ -25,11 +25,13 @@ import {
   shouldReplyToMessageByPolicy,
 } from "./assistantCore.js";
 import {
+  hasRecentGroupAdminActivity,
   getReplyHintForUser,
   isAiControlCommand,
   isAiPausedForUser,
   isGroupAdminSender,
   isPrivilegedTelegramUser,
+  markGroupAdminActivity,
   runAiControlCommand,
 } from "./telegramUserControls.js";
 
@@ -68,6 +70,11 @@ let botIdentity = {
   username: BOT_USERNAME_ENV,
   id: Number(process.env.BOT_ID || 0) || 0,
 };
+
+function isGroupChat(chatType) {
+  const type = String(chatType || "").toLowerCase();
+  return type === "group" || type === "supergroup";
+}
 
 if (!TOKEN) {
   console.error("Missing TELEGRAM_TOKEN.");
@@ -260,19 +267,52 @@ async function handleMessage(message) {
 
   const userId = message.from?.id;
   const user = message.from?.username || message.from?.id || "unknown";
+  const chatType = message.chat?.type;
+  const inGroup = isGroupChat(chatType);
 
-  if (isPrivilegedTelegramUser(userId)) {
+  if (isPrivilegedTelegramUser(userId) && !inGroup) {
     metrics.messagesFiltered++;
     return;
   }
 
   const isGroupAdmin = await isGroupAdminSender({
-    chatType: message.chat?.type,
+    chatType,
     chatId: message.chat?.id,
     userId,
     resolveMemberStatus: ({ chatId, userId }) => resolveChatMemberStatus(chatId, userId),
   });
+
   if (isGroupAdmin) {
+    markGroupAdminActivity({
+      chatType,
+      chatId: message.chat?.id,
+    });
+  }
+
+  const text = String(message.text || message.caption || "").trim();
+  const command = parseTelegramCommand(text);
+
+  const replyFrom = message.reply_to_message?.from;
+  const replyToBot = !!replyFrom && (
+    (botIdentity.id && Number(replyFrom.id) === botIdentity.id)
+    || (botIdentity.username && String(replyFrom.username || "").toLowerCase() === botIdentity.username)
+  );
+
+  const shouldReply = shouldReplyToMessageByPolicy({
+    chatType,
+    text,
+    command,
+    botUsername: botIdentity.username,
+    isReplyToBot: replyToBot,
+    groupMentionOnly: GROUP_MENTION_ONLY,
+    isGroupAdminSender: isGroupAdmin,
+    hasRecentGroupAdminActivity: hasRecentGroupAdminActivity({
+      chatType,
+      chatId: message.chat?.id,
+    }),
+  });
+
+  if (!shouldReply) {
     metrics.messagesFiltered++;
     return;
   }
@@ -294,13 +334,10 @@ async function handleMessage(message) {
     return;
   }
 
-  const text = String(message.text || message.caption || "").trim();
   if (!text) {
     metrics.messagesFiltered++;
     return;
   }
-
-  const command = parseTelegramCommand(text);
 
   if (isAiControlCommand(command)) {
     try {
@@ -334,26 +371,6 @@ async function handleMessage(message) {
   if (!checkGlobalRateLimit()) {
     metrics.rateLimited++;
     console.log(`[${getTimestamp()}] ⛔ Global rate limit exceeded`);
-    return;
-  }
-
-  const replyFrom = message.reply_to_message?.from;
-  const replyToBot = !!replyFrom && (
-    (botIdentity.id && Number(replyFrom.id) === botIdentity.id)
-    || (botIdentity.username && String(replyFrom.username || "").toLowerCase() === botIdentity.username)
-  );
-
-  const shouldReply = shouldReplyToMessageByPolicy({
-    chatType: message.chat?.type,
-    text,
-    command,
-    botUsername: botIdentity.username,
-    isReplyToBot: replyToBot,
-    groupMentionOnly: GROUP_MENTION_ONLY,
-  });
-
-  if (!shouldReply) {
-    metrics.messagesFiltered++;
     return;
   }
 

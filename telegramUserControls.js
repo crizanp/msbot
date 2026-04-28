@@ -18,6 +18,10 @@ const GROUP_ADMIN_CACHE_TTL_MS = Math.max(
   60_000,
   Number(process.env.GROUP_ADMIN_CACHE_TTL_MS || 5 * 60 * 1000) || 5 * 60 * 1000
 );
+const GROUP_ADMIN_ACTIVITY_WINDOW_MS = Math.max(
+  60_000,
+  Number(process.env.GROUP_ADMIN_ACTIVITY_WINDOW_MS || 30 * 60 * 1000) || 30 * 60 * 1000
+);
 
 const SUPABASE_URL = String(process.env.SUPABASE_URL || "").trim();
 const SUPABASE_SERVICE_ROLE_KEY = String(
@@ -30,6 +34,7 @@ const COMMAND_START_AI = "/startaibot";
 
 const memoryState = new Map();
 const groupAdminStatusCache = new Map();
+const groupAdminRecentActivityByChat = new Map();
 
 let supabaseUnavailable = false;
 const supabase = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
@@ -42,6 +47,11 @@ function normalizeUserId(userId) {
   if (userId === undefined || userId === null) return "";
   const value = String(userId).trim();
   return value;
+}
+
+function normalizeChatId(chatId) {
+  if (chatId === undefined || chatId === null) return "";
+  return String(chatId).trim();
 }
 
 function parseTelegramIdSet(raw) {
@@ -76,6 +86,14 @@ function getPrivilegedSenderIdSet() {
 function isGroupType(chatType) {
   const type = String(chatType || "").toLowerCase();
   return type === "group" || type === "supergroup";
+}
+
+function pruneExpiredGroupAdminActivity(nowMs = Date.now()) {
+  for (const [chatKey, lastAdminAtMs] of groupAdminRecentActivityByChat.entries()) {
+    if (nowMs - lastAdminAtMs > GROUP_ADMIN_ACTIVITY_WINDOW_MS) {
+      groupAdminRecentActivityByChat.delete(chatKey);
+    }
+  }
 }
 
 function getGroupAdminCacheKey(chatId, userKey) {
@@ -237,6 +255,37 @@ export async function isGroupAdminSender({
   }
 }
 
+export function markGroupAdminActivity({
+  chatType,
+  chatId,
+  atMs = Date.now(),
+} = {}) {
+  if (!isGroupType(chatType)) return;
+
+  const chatKey = normalizeChatId(chatId);
+  if (!chatKey) return;
+
+  pruneExpiredGroupAdminActivity(atMs);
+  groupAdminRecentActivityByChat.set(chatKey, atMs);
+}
+
+export function hasRecentGroupAdminActivity({
+  chatType,
+  chatId,
+  nowMs = Date.now(),
+} = {}) {
+  if (!isGroupType(chatType)) return false;
+
+  const chatKey = normalizeChatId(chatId);
+  if (!chatKey) return false;
+
+  pruneExpiredGroupAdminActivity(nowMs);
+  const lastAdminAtMs = groupAdminRecentActivityByChat.get(chatKey);
+  if (!lastAdminAtMs) return false;
+
+  return nowMs - lastAdminAtMs <= GROUP_ADMIN_ACTIVITY_WINDOW_MS;
+}
+
 export function isAiControlCommand(command) {
   const cmd = String(command || "").toLowerCase();
   return cmd === COMMAND_STOP_AI || cmd === COMMAND_START_AI;
@@ -298,5 +347,6 @@ export function getAiStopHours() {
 export function __resetTelegramUserControlsForTests() {
   memoryState.clear();
   groupAdminStatusCache.clear();
+  groupAdminRecentActivityByChat.clear();
   supabaseUnavailable = false;
 }

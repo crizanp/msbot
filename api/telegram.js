@@ -13,11 +13,13 @@ import {
   shouldReplyToMessageByPolicy,
 } from "../assistantCore.js";
 import {
+  hasRecentGroupAdminActivity,
   getReplyHintForUser,
   isAiControlCommand,
   isAiPausedForUser,
   isGroupAdminSender,
   isPrivilegedTelegramUser,
+  markGroupAdminActivity,
   runAiControlCommand,
 } from "../telegramUserControls.js";
 
@@ -27,6 +29,11 @@ const GROUP_MENTION_ONLY = String(process.env.GROUP_MENTION_ONLY || "false").toL
 const BOT_USERNAME_ENV = String(process.env.BOT_USERNAME || "").replace(/^@/, "").toLowerCase();
 
 let botIdentityPromise;
+
+function isGroupChat(chatType) {
+  const type = String(chatType || "").toLowerCase();
+  return type === "group" || type === "supergroup";
+}
 
 function getHeader(req, name) {
   if (!req?.headers) return "";
@@ -231,7 +238,8 @@ export default async function handler(req, res) {
   const fromUser = message.from?.username || message.from?.first_name || "unknown";
   console.log(`[WEBHOOK] Message from @${fromUser} in ${chatType}: ${text.slice(0, 80)}`);
 
-  if (isPrivilegedTelegramUser(userId)) {
+  const inGroup = isGroupChat(chatType);
+  if (isPrivilegedTelegramUser(userId) && !inGroup) {
     console.log("[WEBHOOK] Skipped — privileged sender");
     res.status(200).json({ ok: true, skipped: "privileged_sender" });
     return;
@@ -243,9 +251,47 @@ export default async function handler(req, res) {
     userId,
     resolveMemberStatus: ({ chatId, userId }) => resolveChatMemberStatus(chatId, userId),
   });
+
   if (isGroupAdmin) {
-    console.log("[WEBHOOK] Skipped — group admin sender");
-    res.status(200).json({ ok: true, skipped: "group_admin_sender" });
+    markGroupAdminActivity({
+      chatType,
+      chatId: message.chat?.id,
+    });
+  }
+
+  const command = parseTelegramCommand(text);
+  const botIdentity = await getBotIdentity();
+  const replyFrom = message.reply_to_message?.from;
+  const replyToBot = !!replyFrom && (
+    (botIdentity.id && Number(replyFrom.id) === botIdentity.id)
+    || (botIdentity.username && String(replyFrom.username || "").toLowerCase() === botIdentity.username)
+  );
+
+  const hasRecentAdminActivity = hasRecentGroupAdminActivity({
+    chatType,
+    chatId: message.chat?.id,
+  });
+
+  const shouldReply = shouldReplyToMessageByPolicy({
+    chatType: message.chat?.type,
+    text,
+    command,
+    botUsername: botIdentity.username,
+    isReplyToBot: replyToBot,
+    groupMentionOnly: GROUP_MENTION_ONLY,
+    isGroupAdminSender: isGroupAdmin,
+    hasRecentGroupAdminActivity: hasRecentAdminActivity,
+  });
+
+  if (!shouldReply) {
+    const reason = isGroupAdmin
+      ? "group_admin_sender"
+      : hasRecentAdminActivity
+        ? "recent_group_admin_activity"
+        : "mention_policy";
+
+    console.log(`[WEBHOOK] Skipped — ${reason}`);
+    res.status(200).json({ ok: true, skipped: reason });
     return;
   }
 
@@ -283,8 +329,6 @@ export default async function handler(req, res) {
       return;
     }
 
-    const command = parseTelegramCommand(text);
-
     if (isAiControlCommand(command)) {
       const replyText = await runAiControlCommand(command, userId);
       if (!replyText) {
@@ -315,28 +359,6 @@ export default async function handler(req, res) {
     if (await isAiPausedForUser(userId)) {
       console.log("[WEBHOOK] Skipped — AI paused for sender");
       res.status(200).json({ ok: true, skipped: "sender_ai_paused" });
-      return;
-    }
-
-    const botIdentity = await getBotIdentity();
-    const replyFrom = message.reply_to_message?.from;
-    const replyToBot = !!replyFrom && (
-      (botIdentity.id && Number(replyFrom.id) === botIdentity.id)
-      || (botIdentity.username && String(replyFrom.username || "").toLowerCase() === botIdentity.username)
-    );
-
-    const shouldReply = shouldReplyToMessageByPolicy({
-      chatType: message.chat?.type,
-      text,
-      command,
-      botUsername: botIdentity.username,
-      isReplyToBot: replyToBot,
-      groupMentionOnly: GROUP_MENTION_ONLY,
-    });
-
-    if (!shouldReply) {
-      console.log(`[WEBHOOK] Skipped — mention policy (${chatType})`);
-      res.status(200).json({ ok: true, skipped: "mention_policy" });
       return;
     }
 

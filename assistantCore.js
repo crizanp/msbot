@@ -1280,6 +1280,17 @@ function hasMention(text, username) {
   return re.test(String(text || ""));
 }
 
+export function hasBotMention(text, botUsername) {
+  const configuredUsername = String(process.env.BOT_USERNAME || "");
+  const candidates = [
+    botUsername,
+    configuredUsername,
+    "MoonsaleAssistantBot",
+  ];
+
+  return candidates.some(candidate => hasMention(text, candidate));
+}
+
 export function shouldReplyToMessageByPolicy({
   chatType,
   text,
@@ -1287,13 +1298,20 @@ export function shouldReplyToMessageByPolicy({
   botUsername,
   isReplyToBot = false,
   groupMentionOnly,
+  isGroupAdminSender = false,
+  hasRecentGroupAdminActivity = false,
 }) {
   const mentionOnly = typeof groupMentionOnly === "boolean" ? groupMentionOnly : GROUP_MENTION_ONLY;
 
-  if (!mentionOnly) return true;
-
   const type = String(chatType || "").toLowerCase();
   const isGroup = type === "group" || type === "supergroup";
+  const explicitlyMentioned = hasBotMention(text, botUsername);
+
+  if (isGroup && (isGroupAdminSender || hasRecentGroupAdminActivity) && !explicitlyMentioned) {
+    return false;
+  }
+
+  if (!mentionOnly) return true;
   if (!isGroup) return true;
 
   // Always allow explicit bot commands.
@@ -1302,5 +1320,5 @@ export function shouldReplyToMessageByPolicy({
   // In mention-only mode, replying to the bot is also allowed.
   if (isReplyToBot) return true;
 
-  return hasMention(text, botUsername);
+  return explicitlyMentioned;
 }

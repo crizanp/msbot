@@ -22,6 +22,8 @@ import {
   OFF_TOPIC_REPLY,
   MEDIA_UNSUPPORTED_REPLY,
   hasTelegramMediaContent,
+  hasBotMention,
+  shouldReplyToMessageByPolicy,
 } from "./assistantCore.js";
 import { runSearchEngineRegressionSuite } from "./searchEngine.regression.js";
 
@@ -203,6 +205,76 @@ test("Does not detect plain text message as media", () => {
 test("Media unsupported reply references admin handoff", () => {
   assertIncludes(MEDIA_UNSUPPORTED_REPLY, "admin", "Media fallback should mention admin assistance");
   assertIncludes(MEDIA_UNSUPPORTED_REPLY, "text", "Media fallback should clarify text-only support");
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 🛡️ GROUP ADMIN ACTIVITY POLICY TESTS
+// ═════════════════════════════════════════════════════════════════════════════
+
+console.log("\n📌 GROUP ADMIN ACTIVITY POLICY TESTS");
+console.log("=".repeat(70));
+
+test("Detects @MoonsaleAssistantBot mention without explicit username context", () => {
+  assert(
+    hasBotMention("hey @MoonsaleAssistantBot can you help", ""),
+    "Should detect hardcoded bot mention fallback"
+  );
+});
+
+test("Policy blocks non-mentioned group message when admin was recently active", () => {
+  const shouldReply = shouldReplyToMessageByPolicy({
+    chatType: "supergroup",
+    text: "what are moonsale fees",
+    command: "",
+    botUsername: "moonsaleassistantbot",
+    groupMentionOnly: false,
+    isGroupAdminSender: false,
+    hasRecentGroupAdminActivity: true,
+  });
+
+  assert(!shouldReply, "Non-mentioned group messages should be paused during admin activity window");
+});
+
+test("Policy allows non-admin mention when admin was recently active", () => {
+  const shouldReply = shouldReplyToMessageByPolicy({
+    chatType: "group",
+    text: "@MoonsaleAssistantBot what are fees",
+    command: "",
+    botUsername: "moonsaleassistantbot",
+    groupMentionOnly: false,
+    isGroupAdminSender: false,
+    hasRecentGroupAdminActivity: true,
+  });
+
+  assert(shouldReply, "Explicit mention should override recent admin activity pause");
+});
+
+test("Policy blocks admin sender message without mention", () => {
+  const shouldReply = shouldReplyToMessageByPolicy({
+    chatType: "supergroup",
+    text: "please explain vesting",
+    command: "",
+    botUsername: "moonsaleassistantbot",
+    groupMentionOnly: false,
+    isGroupAdminSender: true,
+    hasRecentGroupAdminActivity: false,
+  });
+
+  assert(!shouldReply, "Admin sender should only get reply when explicitly mentioning the bot");
+});
+
+test("Policy allows admin sender message with explicit mention", () => {
+  const shouldReply = shouldReplyToMessageByPolicy({
+    chatType: "supergroup",
+    text: "@MoonsaleAssistantBot please explain vesting",
+    command: "",
+    botUsername: "moonsaleassistantbot",
+    groupMentionOnly: false,
+    isGroupAdminSender: true,
+    hasRecentGroupAdminActivity: false,
+  });
+
+  assert(shouldReply, "Admin sender mention should be allowed");
 });
 
 // ═════════════════════════════════════════════════════════════════════════════

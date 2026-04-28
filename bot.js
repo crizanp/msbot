@@ -16,11 +16,13 @@ import {
   shouldReplyToMessageByPolicy,
 } from "./assistantCore.js";
 import {
+  hasRecentGroupAdminActivity,
   getReplyHintForUser,
   isAiControlCommand,
   isGroupAdminSender,
   isAiPausedForUser,
   isPrivilegedTelegramUser,
+  markGroupAdminActivity,
   runAiControlCommand,
 } from "./telegramUserControls.js";
 
@@ -42,14 +44,26 @@ function ensureToken() {
   return token;
 }
 
-function registerCommand(bot, command) {
+function isGroupChat(chatType) {
+  const type = String(chatType || "").toLowerCase();
+  return type === "group" || type === "supergroup";
+}
+
+function registerCommand(bot, command, options = {}) {
   const regex = new RegExp(`^\\${command}(?:@[a-zA-Z0-9_]+)?(?:\\s|$)`, "i");
   bot.onText(regex, async msg => {
     try {
       const userId = msg.from?.id;
-      if (isPrivilegedTelegramUser(userId)) return;
+      const chatType = msg.chat?.type;
+      const inGroup = isGroupChat(chatType);
+      const isPrivileged = isPrivilegedTelegramUser(userId);
+
+      // Keep private-chat admin ignore behavior, but allow mention override in groups.
+      if (isPrivileged && !inGroup) return;
+
+      const incomingText = String(msg.text || "").trim();
       const isGroupAdmin = await isGroupAdminSender({
-        chatType: msg.chat?.type,
+        chatType,
         chatId: msg.chat?.id,
         userId,
         resolveMemberStatus: async ({ chatId, userId }) => {
@@ -57,7 +71,28 @@ function registerCommand(bot, command) {
           return member?.status || "";
         },
       });
-      if (isGroupAdmin) return;
+
+      if (isGroupAdmin) {
+        markGroupAdminActivity({
+          chatType,
+          chatId: msg.chat?.id,
+        });
+      }
+
+      const shouldReply = shouldReplyToMessageByPolicy({
+        chatType,
+        text: incomingText,
+        command,
+        botUsername: typeof options.getBotUsername === "function" ? options.getBotUsername() : "",
+        groupMentionOnly: options.groupMentionOnly,
+        isGroupAdminSender: isGroupAdmin,
+        hasRecentGroupAdminActivity: hasRecentGroupAdminActivity({
+          chatType,
+          chatId: msg.chat?.id,
+        }),
+      });
+
+      if (!shouldReply) return;
       if (await isAiPausedForUser(userId)) return;
 
       const text = resolveCommandText(command);
@@ -106,18 +141,30 @@ function startPollingBot() {
       console.error(`[WARN] Could not read bot identity: ${err.message}`);
     });
 
-  registerCommand(bot, "/start");
-  registerCommand(bot, "/help");
-  registerCommand(bot, "/links");
-  registerCommand(bot, "/about");
+  const commandPolicyOptions = {
+    groupMentionOnly,
+    getBotUsername: () => botUsername,
+  };
+
+  registerCommand(bot, "/start", commandPolicyOptions);
+  registerCommand(bot, "/help", commandPolicyOptions);
+  registerCommand(bot, "/links", commandPolicyOptions);
+  registerCommand(bot, "/about", commandPolicyOptions);
 
   bot.on("message", async msg => {
     if (!msg) return;
 
     const userId = msg.from?.id;
-    if (isPrivilegedTelegramUser(userId)) return;
+    const chatType = msg.chat?.type;
+    const inGroup = isGroupChat(chatType);
+    const isPrivileged = isPrivilegedTelegramUser(userId);
+    if (isPrivileged && !inGroup) return;
+
+    const text = String(msg.text || msg.caption || "").trim();
+    const command = parseTelegramCommand(text);
+
     const isGroupAdmin = await isGroupAdminSender({
-      chatType: msg.chat?.type,
+      chatType,
       chatId: msg.chat?.id,
       userId,
       resolveMemberStatus: async ({ chatId, userId }) => {
@@ -125,7 +172,35 @@ function startPollingBot() {
         return member?.status || "";
       },
     });
-    if (isGroupAdmin) return;
+
+    if (isGroupAdmin) {
+      markGroupAdminActivity({
+        chatType,
+        chatId: msg.chat?.id,
+      });
+    }
+
+    const replyFrom = msg.reply_to_message?.from;
+    const replyToBot = !!replyFrom && (
+      (botId && Number(replyFrom.id) === botId)
+      || (botUsername && String(replyFrom.username || "").toLowerCase() === botUsername)
+    );
+
+    const shouldReply = shouldReplyToMessageByPolicy({
+      chatType,
+      text,
+      command,
+      botUsername,
+      isReplyToBot: replyToBot,
+      groupMentionOnly,
+      isGroupAdminSender: isGroupAdmin,
+      hasRecentGroupAdminActivity: hasRecentGroupAdminActivity({
+        chatType,
+        chatId: msg.chat?.id,
+      }),
+    });
+
+    if (!shouldReply) return;
 
     if (hasTelegramMediaContent(msg)) {
       if (await isAiPausedForUser(userId)) return;
@@ -133,10 +208,7 @@ function startPollingBot() {
       return;
     }
 
-    if (!msg?.text) return;
-
-    const text = String(msg.text).trim();
-    const command = parseTelegramCommand(text);
+    if (!text) return;
 
     if (isAiControlCommand(command)) {
       try {
@@ -152,23 +224,6 @@ function startPollingBot() {
 
     if (await isAiPausedForUser(userId)) return;
     if (command) return;
-
-    const replyFrom = msg.reply_to_message?.from;
-    const replyToBot = !!replyFrom && (
-      (botId && Number(replyFrom.id) === botId)
-      || (botUsername && String(replyFrom.username || "").toLowerCase() === botUsername)
-    );
-
-    const shouldReply = shouldReplyToMessageByPolicy({
-      chatType: msg.chat?.type,
-      text,
-      command,
-      botUsername,
-      isReplyToBot: replyToBot,
-      groupMentionOnly,
-    });
-
-    if (!shouldReply) return;
 
     const chatId = msg.chat.id;
     const user = msg.from?.username || msg.from?.id || "unknown";
